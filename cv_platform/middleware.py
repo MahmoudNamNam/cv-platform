@@ -3,6 +3,7 @@ Custom middleware to debug and ensure language is applied correctly.
 """
 from django.utils import translation
 from django.conf import settings
+from django.db import OperationalError
 
 
 class LanguageDebugMiddleware:
@@ -14,7 +15,17 @@ class LanguageDebugMiddleware:
 
     def __call__(self, request):
         # Check language sources
-        lang_from_session = request.session.get('django_language')
+        # Handle case where session table doesn't exist yet (during initial migration)
+        lang_from_session = None
+        try:
+            lang_from_session = request.session.get('django_language')
+        except OperationalError:
+            # Database tables not created yet, skip session lookup
+            pass
+        except Exception:
+            # Any other session error, skip session lookup
+            pass
+        
         lang_from_cookie = request.COOKIES.get(settings.LANGUAGE_COOKIE_NAME)
         
         # Determine language (cookie takes precedence, then session, then default)

@@ -39,8 +39,15 @@ def student_dashboard(request):
         messages.error(request, 'Access denied. Student access only.')
         return redirect('cv_extraction:home')
     
-    # Get student's CV profile
-    cv_profile = get_cv_profile(request.user.id)
+    # Get student's CV profile (handle MongoDB connection errors gracefully)
+    try:
+        cv_profile = get_cv_profile(request.user.id)
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f'Error loading CV profile: {str(e)}')
+        cv_profile = None
+        # Don't show error to user - just show empty profile
     
     # Calculate profile completeness
     completeness = 0
