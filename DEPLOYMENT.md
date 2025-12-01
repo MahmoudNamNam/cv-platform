@@ -95,8 +95,9 @@ Render offers 750 free hours/month (enough for 1 web service running 24/7).
      ```
    - **Start Command**: 
      ```bash
-     cd cv_platform && gunicorn cv_platform.wsgi:application --bind 0.0.0.0:$PORT
+     gunicorn cv_platform.wsgi:application --bind 0.0.0.0:$PORT
      ```
+     ⚠️ **Important**: Do NOT use `cd cv_platform &&` before gunicorn. Run gunicorn from the project root.
 
 ### 2.3 Set Environment Variables
 

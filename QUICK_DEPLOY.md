@@ -49,8 +49,9 @@ git push -u origin main
      ```
    - **Start Command**: 
      ```bash
-     cd cv_platform && gunicorn cv_platform.wsgi:application --bind 0.0.0.0:$PORT
+     gunicorn cv_platform.wsgi:application --bind 0.0.0.0:$PORT
      ```
+     ⚠️ **Important**: Do NOT use `cd cv_platform &&` before gunicorn. Run gunicorn from the project root.
 5. Add Environment Variables:
    ```
    DEBUG=False

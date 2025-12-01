@@ -12,16 +12,54 @@ from .mixins import get_role_redirect_url
 
 def register_view(request):
     """User registration view."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
     if request.method == 'POST':
         form = UserRegistrationForm(request.POST)
         if form.is_valid():
-            user = form.save()
-            login(request, user)
-            messages.success(request, 'Registration successful!')
-            # Redirect based on role
-            redirect_url = get_role_redirect_url(user)
-            return redirect(redirect_url)
+            try:
+                user = form.save()
+                logger.info(f'User {user.username} created successfully')
+                
+                # Login the user
+                try:
+                    login(request, user)
+                    logger.info(f'User {user.username} logged in after registration')
+                except Exception as login_error:
+                    logger.error(f'Login error after registration: {str(login_error)}', exc_info=True)
+                    messages.warning(request, 'Account created but login failed. Please login manually.')
+                    return redirect('accounts:login')
+                
+                messages.success(request, 'Registration successful!')
+                
+                # Redirect based on role
+                try:
+                    redirect_url = get_role_redirect_url(user)
+                    logger.info(f'Redirecting user {user.username} to {redirect_url}')
+                    return redirect(redirect_url)
+                except Exception as redirect_error:
+                    logger.error(f'Redirect error: {str(redirect_error)}', exc_info=True)
+                    # Fallback to home page
+                    return redirect('cv_extraction:home')
+                    
+            except Exception as e:
+                # Log the full error for debugging
+                logger.error(f'Registration error: {str(e)}', exc_info=True)
+                import traceback
+                logger.error(f'Traceback: {traceback.format_exc()}')
+                
+                # Provide user-friendly error message
+                error_msg = str(e)
+                if 'UNIQUE constraint' in error_msg or 'duplicate' in error_msg.lower():
+                    messages.error(request, 'Username or email already exists. Please choose different credentials.')
+                elif 'role' in error_msg.lower() or 'field' in error_msg.lower():
+                    messages.error(request, 'Registration failed due to invalid data. Please check your information and try again.')
+                else:
+                    messages.error(request, 'Registration failed. Please try again or contact support.')
         else:
+            # Log form errors
+            logger.warning(f'Registration form invalid: {form.errors}')
             messages.error(request, 'Please correct the errors below.')
     else:
         form = UserRegistrationForm()

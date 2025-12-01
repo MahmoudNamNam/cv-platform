@@ -10,6 +10,7 @@ from django.http import HttpResponseRedirect
 from django.utils import translation
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
+from accounts.setup_views import create_initial_admin
 
 @csrf_exempt  # Language switching should be CSRF exempt (like Django's built-in view)
 @require_http_methods(["POST"])
@@ -100,10 +101,109 @@ def custom_set_language(request):
     response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     return response
 
+def health_check(request):
+    """Simple health check endpoint for deployment debugging."""
+    from django.http import JsonResponse
+    from django.db import connection
+    from accounts.models import User
+    import os
+    
+    health_data = {
+        'status': 'ok',
+        'database': 'unknown',
+        'migrations': 'unknown',
+        'environment': {
+            'DEBUG': os.getenv('DEBUG', 'Not set'),
+            'ALLOWED_HOSTS': os.getenv('ALLOWED_HOSTS', 'Not set'),
+        }
+    }
+    
+    # Check database
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            health_data['database'] = 'connected'
+            
+            # Check if User table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='accounts_user'")
+            if cursor.fetchone():
+                health_data['migrations'] = 'User table exists'
+                # Try to count users
+                try:
+                    user_count = User.objects.count()
+                    health_data['user_count'] = user_count
+                except Exception as e:
+                    health_data['migrations'] = f'Table exists but error: {str(e)}'
+            else:
+                health_data['migrations'] = 'User table NOT found - migrations needed!'
+    except Exception as e:
+        health_data['database'] = f'Error: {str(e)}'
+        health_data['status'] = 'error'
+    
+    return JsonResponse(health_data)
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def run_migrations_endpoint(request):
+    """Run migrations via web endpoint (for free plans without shell access)."""
+    from django.http import JsonResponse
+    from django.core.management import call_command
+    from django.db import connection
+    import os
+    import io
+    
+    # Security: Require SETUP_TOKEN (same as admin creation)
+    setup_token = os.environ.get('SETUP_TOKEN', '')
+    if not setup_token:
+        return JsonResponse({
+            'error': 'SETUP_TOKEN not configured. This endpoint is disabled.'
+        }, status=403)
+    
+    # Get token from request
+    import json
+    try:
+        data = json.loads(request.body) if request.body else {}
+    except:
+        data = request.POST.dict() if hasattr(request, 'POST') else {}
+    
+    provided_token = data.get('token', '')
+    if provided_token != setup_token:
+        return JsonResponse({'error': 'Invalid token'}, status=403)
+    
+    # Run migrations
+    try:
+        output = io.StringIO()
+        call_command('migrate', '--noinput', stdout=output, stderr=output)
+        migration_output = output.getvalue()
+        
+        # Check if User table exists now
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='accounts_user'")
+            table_exists = cursor.fetchone() is not None
+        
+        return JsonResponse({
+            'success': True,
+            'message': 'Migrations completed',
+            'output': migration_output,
+            'user_table_exists': table_exists
+        })
+    except Exception as e:
+        import traceback
+        return JsonResponse({
+            'error': f'Migration failed: {str(e)}',
+            'traceback': traceback.format_exc()
+        }, status=500)
+
 urlpatterns = [
+    # Health check endpoint (for debugging)
+    path('health/', health_check, name='health_check'),
+    # Run migrations endpoint (for free plans without shell)
+    path('setup/run-migrations/', run_migrations_endpoint, name='run_migrations'),
     # Use custom set_language for better control
     path('i18n/setlang/', custom_set_language, name='set_language'),
     path('i18n/', include('django.conf.urls.i18n')),
+    # Setup endpoint (one-time admin creation)
+    path('setup/create-admin/', create_initial_admin, name='create_initial_admin'),
 ]
 
 # No root redirect needed - i18n_patterns handles root URL automatically
