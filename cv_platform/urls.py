@@ -126,16 +126,26 @@ def health_check(request):
             
             # Check if User table exists
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='accounts_user'")
-            if cursor.fetchone():
-                health_data['migrations'] = 'User table exists'
+            user_table_exists = cursor.fetchone() is not None
+            
+            # Check if django_session table exists (required for sessions)
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='django_session'")
+            session_table_exists = cursor.fetchone() is not None
+            
+            if user_table_exists and session_table_exists:
+                health_data['migrations'] = 'All tables exist'
                 # Try to count users
                 try:
                     user_count = User.objects.count()
                     health_data['user_count'] = user_count
                 except Exception as e:
-                    health_data['migrations'] = f'Table exists but error: {str(e)}'
-            else:
+                    health_data['migrations'] = f'Tables exist but error: {str(e)}'
+            elif not user_table_exists:
                 health_data['migrations'] = 'User table NOT found - migrations needed!'
+                health_data['status'] = 'error'
+            elif not session_table_exists:
+                health_data['migrations'] = 'django_session table NOT found - migrations needed!'
+                health_data['status'] = 'error'
     except Exception as e:
         health_data['database'] = f'Error: {str(e)}'
         health_data['status'] = 'error'
