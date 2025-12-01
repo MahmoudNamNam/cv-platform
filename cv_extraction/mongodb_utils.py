@@ -12,6 +12,53 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def normalize_mongodb_uri(uri: str) -> str:
+    """
+    Normalize MongoDB URI to ensure proper format.
+    
+    For mongodb+srv:// connections, TLS is automatically enabled by PyMongo.
+    This function ensures the URI has:
+    1. Database name (if missing, uses MONGODB_DB_NAME from settings)
+    2. Connection options (retryWrites=true&w=majority)
+    
+    Examples:
+    - mongodb+srv://user:pass@host.net/ -> mongodb+srv://user:pass@host.net/cv_platform?retryWrites=true&w=majority
+    - mongodb+srv://user:pass@host.net -> mongodb+srv://user:pass@host.net/cv_platform?retryWrites=true&w=majority
+    - mongodb+srv://user:pass@host.net/cv_platform -> mongodb+srv://user:pass@host.net/cv_platform?retryWrites=true&w=majority
+    """
+    if not uri:
+        return uri
+    
+    # For mongodb+srv://, ensure it has database name and query parameters
+    if uri.startswith('mongodb+srv://'):
+        # Check if URI ends with just / (no database name)
+        if uri.endswith('/'):
+            # Remove trailing / and add database name
+            db_name = settings.MONGODB_DB_NAME
+            uri = uri.rstrip('/') + f'/{db_name}'
+        # Check if URI has @ but no / after it (no database name)
+        elif '@' in uri and '/' not in uri.split('@')[1].split('?')[0]:
+            # No database name, add it
+            db_name = settings.MONGODB_DB_NAME
+            # Insert database name before ? if present, or at the end
+            if '?' in uri:
+                uri = uri.split('?')[0] + f'/{db_name}?' + uri.split('?')[1]
+            else:
+                uri = uri + f'/{db_name}'
+        
+        # Ensure query parameters are present
+        if '?' not in uri:
+            # Add standard Atlas connection parameters
+            uri = uri + '?retryWrites=true&w=majority'
+        else:
+            # Has query params, check if retryWrites is missing
+            query_part = uri.split('?')[1]
+            if 'retryWrites' not in query_part.lower():
+                uri = uri + '&retryWrites=true&w=majority'
+    
+    return uri
+
+
 class MongoDBManager:
     """Singleton MongoDB connection manager."""
     _client: Optional[MongoClient] = None
@@ -22,22 +69,38 @@ class MongoDBManager:
         """Get MongoDB client instance with timeout settings."""
         if cls._client is None:
             # Get MongoDB URI and ensure it has proper format
-            mongodb_uri = settings.MONGODB_URI
+            mongodb_uri = normalize_mongodb_uri(settings.MONGODB_URI)
             
-            # Add timeout settings to prevent hanging
-            # Use shorter timeouts to fail fast rather than hang
-            # Don't test connection on init - let first query handle it with timeout
-            cls._client = MongoClient(
-                mongodb_uri,
-                serverSelectionTimeoutMS=5000,  # 5 seconds - fail fast
-                connectTimeoutMS=5000,  # 5 seconds connection timeout
-                socketTimeoutMS=5000,  # 5 seconds socket timeout
-                maxPoolSize=10,
-                retryWrites=True,
-                retryReads=True,
-                # Don't wait for connection on init - connect lazily
-                connect=False
-            )
+            # Ensure connection string has proper SSL/TLS parameters for Atlas
+            # For mongodb+srv://, SSL is required by default
+            connection_params = {
+                'serverSelectionTimeoutMS': 15000,  # 15 seconds - increased for SSL handshake
+                'connectTimeoutMS': 15000,  # 15 seconds connection timeout
+                'socketTimeoutMS': 15000,  # 15 seconds socket timeout
+                'maxPoolSize': 10,
+                'retryWrites': True,
+                'retryReads': True,
+                'connect': False,  # Don't wait for connection on init - connect lazily
+            }
+            
+            # For mongodb+srv:// (Atlas), ensure TLS is properly configured
+            # PyMongo automatically enables TLS for +srv connections, but we can be explicit
+            if mongodb_uri.startswith('mongodb+srv://'):
+                # Ensure TLS is enabled (default for +srv, but explicit is better)
+                connection_params['tls'] = True
+                connection_params['tlsAllowInvalidCertificates'] = False
+                # Use system default CA certificates
+                connection_params['tlsCAFile'] = None
+            
+            try:
+                cls._client = MongoClient(mongodb_uri, **connection_params)
+                logger.info(f'MongoDB client created successfully (URI: {mongodb_uri[:20]}...)')
+            except Exception as e:
+                logger.error(f'Failed to create MongoDB client: {str(e)}')
+                logger.error(f'MongoDB URI format: {mongodb_uri[:50]}... (truncated for security)')
+                # Reset connection on failure
+                cls._client = None
+                raise
         return cls._client
     
     @classmethod
@@ -123,8 +186,16 @@ def save_cv_profile(user_id: int, cv_data: Dict) -> str:
             result = collection.insert_one(document)
             return str(result.inserted_id)
     except (ServerSelectionTimeoutError, ConnectionFailure, PyMongoError) as e:
-        logger.error(f'MongoDB error in save_cv_profile: {str(e)}')
+        error_msg = str(e)
+        logger.error(f'MongoDB error in save_cv_profile: {error_msg}')
+        # Reset connection on any MongoDB error
         MongoDBManager.reset_connection()
+        # If it's an SSL error, provide more helpful message
+        if 'SSL' in error_msg or 'TLS' in error_msg or 'handshake' in error_msg.lower():
+            logger.error('SSL/TLS handshake failed. This may be due to:')
+            logger.error('1. Python 3.13 SSL compatibility issues')
+            logger.error('2. Network/firewall blocking SSL connections')
+            logger.error('3. MongoDB Atlas SSL configuration')
         raise
     except Exception as e:
         logger.error(f'Unexpected error in save_cv_profile: {str(e)}')
