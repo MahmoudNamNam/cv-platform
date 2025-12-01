@@ -29,6 +29,14 @@ def normalize_mongodb_uri(uri: str) -> str:
     if not uri:
         return uri
     
+    # Strip whitespace and remove quotes if present
+    uri = uri.strip().strip('"').strip("'")
+    
+    # Validate URI starts with correct scheme
+    if not (uri.startswith('mongodb://') or uri.startswith('mongodb+srv://')):
+        logger.error(f'Invalid MongoDB URI scheme: {uri[:50]}... (must start with mongodb:// or mongodb+srv://)')
+        raise ValueError(f"Invalid URI scheme: URI must begin with 'mongodb://' or 'mongodb+srv://'. Got: {uri[:50]}...")
+    
     # For mongodb+srv://, ensure it has database name and query parameters
     if uri.startswith('mongodb+srv://'):
         # Check if URI ends with just / (no database name)
@@ -69,7 +77,17 @@ class MongoDBManager:
         """Get MongoDB client instance with timeout settings."""
         if cls._client is None:
             # Get MongoDB URI and ensure it has proper format
-            mongodb_uri = normalize_mongodb_uri(settings.MONGODB_URI)
+            raw_uri = settings.MONGODB_URI
+            logger.debug(f'Raw MongoDB URI from settings: {raw_uri[:50]}... (length: {len(raw_uri)})')
+            
+            # Validate and normalize the URI
+            try:
+                mongodb_uri = normalize_mongodb_uri(raw_uri)
+                logger.debug(f'Normalized MongoDB URI: {mongodb_uri[:50]}...')
+            except ValueError as e:
+                logger.error(f'Failed to normalize MongoDB URI: {str(e)}')
+                logger.error(f'Raw URI value: {repr(raw_uri)}')
+                raise
             
             # Ensure connection string has proper SSL/TLS parameters for Atlas
             # For mongodb+srv://, SSL is required by default
